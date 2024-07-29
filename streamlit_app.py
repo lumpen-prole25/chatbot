@@ -1,56 +1,81 @@
 import streamlit as st
-from openai import OpenAI
+from assistant import *
+import time
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
-)
+def process_run(st, thread_id, assistant_id):
+    # Run the Assistant
+    run_id = runAssistant(thread_id, assistant_id)
+    status = 'running'
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+    # Check Status Session
+    while status != 'completed':
+        with st.spinner('Waiting for assistant response . . .'):
+            time.sleep(20)  # 20-second delay
+            status = checkRunStatus(thread_id, run_id)
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+    # Retrieve the Thread Messages
+    thread_messages = retrieveThread(thread_id)
+    for message in thread_messages:
+        if message['role'] == 'user':
+            st.write('User Message:', message['content'])
+        else:
+            st.write('Assistant Response:', message['content'])
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+def main():
+    st.title("🧑‍💻 Sentence Generator V1 by HJC")
+    """
+    저는 문장생성 봇입니다. 업로드하는 파일은 .json, .csv를 권장합니다. 키워드를 제공해주시고 파일을 올려주시면 파일에 내용을 바탕으로 문장 10개를 생성합니다. 
+    """
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    if 'assistant_initialized' not in st.session_state:
+        # Input field for the title
+        title = st.text_input("Enter the title", key="title")
+        initiation = st.text_input("Enter the assistant's first question", key="initiation")
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+        # File uploader widget
+        uploaded_files = st.file_uploader("Upload Files for the Assistant", accept_multiple_files=True, key="uploader")
+        file_locations = []
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        if uploaded_files and title and initiation:
+            for uploaded_file in uploaded_files:
+                # Read file as bytes
+                bytes_data = uploaded_file.getvalue()
+                location = f"temp_file_{uploaded_file.name}"
+                # Save each file with a unique name
+                with open(location, "wb") as f:
+                    f.write(bytes_data)
+                file_locations.append(location)
+                st.success(f'File {uploaded_file.name} has been uploaded successfully.')
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
+            # Upload file and create assistant
+            with st.spinner('Processing your file and setting up the assistant...'):
+                file_ids = [saveFileOpenAI(location) for location in file_locations]
+                assistant_id, vector_id = createAssistant(file_ids, title)
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            # Start the Thread
+            thread_id = startAssistantThread(initiation, vector_id)
+
+            # Save state
+            st.session_state.thread_id = thread_id
+            st.session_state.assistant_id = assistant_id
+            st.session_state.last_message = initiation
+            st.session_state.assistant_initialized = True
+
+            st.write("Assistant ID:", assistant_id)
+            st.write("Vector ID:", vector_id)
+            st.write("Thread ID:", thread_id)
+
+            process_run(st, thread_id, assistant_id)
+
+    # Handling follow-up questions only if assistant is initialized
+    if 'assistant_initialized' in st.session_state and st.session_state.assistant_initialized:
+        follow_up = st.text_input("Enter your follow-up question", key="follow_up")
+        submit_button = st.button("Submit Follow-up")
+
+        if submit_button and follow_up and follow_up != st.session_state.last_message:
+            st.session_state.last_message = follow_up
+            addMessageToThread(st.session_state.thread_id, follow_up)
+            process_run(st, st.session_state.thread_id, st.session_state.assistant_id)
+
+if __name__ == "__main__":
+    main()
